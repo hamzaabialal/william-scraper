@@ -1,0 +1,4 @@
+playwright
+pandas
+gspread
+google-auth

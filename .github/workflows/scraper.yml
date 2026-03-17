@@ -1,0 +1,32 @@
+name: Centris Scraper
+
+on:
+  schedule:
+    - cron: "0 8 * * *"   # runs every day at 08:00 UTC — change as needed
+  workflow_dispatch:        # lets you run it manually from the GitHub UI
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt
+
+      - name: Install Playwright browsers
+        run: playwright install --with-deps chromium
+
+      - name: Run scraper
+        env:
+          GOOGLE_CREDENTIALS_JSON: ${{ secrets.GOOGLE_CREDENTIALS_JSON }}
+          GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+          GOOGLE_SHEET_TAB: ${{ secrets.GOOGLE_SHEET_TAB }}   # optional, defaults to "Sheet1"
+        run: python scraper.py
