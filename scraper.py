@@ -158,15 +158,18 @@ async def scrape(matrix_pages: list[str], existing_ids: set) -> pd.DataFrame:
             print("Page title after goto:", await page.title())
             print("Page URL after goto:", page.url)
 
+            # Use contains match to avoid apostrophe encoding issues (U+2019 vs U+0027)
             try:
-                await page.wait_for_selector('a[title="Plus d\'affichages"]', timeout=30000)
+                await page.wait_for_selector('a[title*="affichages"]', timeout=30000)
             except Exception:
                 await page.screenshot(path="debug_timeout.png", full_page=True)
-                print("ERROR: Could not find 'Plus d'affichages'. Saving screenshot as debug_timeout.png")
+                # Print all <a> title attributes to diagnose the exact text
+                titles = await page.eval_on_selector_all('a[title]', 'els => els.map(e => e.title)')
+                print("All <a title> values on page:", titles)
                 print("Page HTML snippet:\n", (await page.content())[:3000])
                 raise
 
-            await page.click('a[title="Plus d\'affichages"]')
+            await page.click('a[title*="affichages"]')
 
             await page.wait_for_selector('a:has-text("Sommaire")', state='visible', timeout=7000)
             async with page.expect_navigation(wait_until='load', timeout=15000):
