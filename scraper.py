@@ -114,7 +114,7 @@ def get_data_dict(lines):
 
 async def main():
     matrix_pages = [
-        "https://matrix.centris.ca/Matrix/Public/Portal.aspx?ID=0-1679004740-00&eml=dy5ncmlnYXRAbGlmYS5jYQ==&L=2",
+        # "https://matrix.centris.ca/Matrix/Public/Portal.aspx?ID=0-1679004740-00&eml=dy5ncmlnYXRAbGlmYS5jYQ==&L=2",  # expired email link
         "https://matrix.centris.ca/Matrix/Public/Portal.aspx?L=2&k=7674282XFBM&p=AE-1549033-780#1",
     ]
 
@@ -134,108 +134,115 @@ async def main():
     print(centris_values)
 
     for matrix_page in matrix_pages:
-        async with async_playwright() as p:
-            browser = await p.chromium.launch(
-                headless=True,
-                args=["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"],
-            )
-            context = await browser.new_context(
-                user_agent=(
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) "
-                    "Chrome/124.0.0.0 Safari/537.36"
-                ),
-                viewport={"width": 1280, "height": 800},
-            )
-            page = await context.new_page()
-            await page.goto(matrix_page, wait_until="networkidle", timeout=60000)
+        print(f"\n--- Scraping: {matrix_page} ---")
+        try:
+          await scrape_page(matrix_page, worksheet, centris_values)
+        except Exception as e:
+          print(f"ERROR on {matrix_page}: {e} — skipping to next URL")
+          continue
 
-            await page.screenshot(path="debug_after_goto.png", full_page=True)
-            print("Page title after goto:", await page.title())
-            print("Page URL after goto:", page.url)
 
-            try:
-                await page.wait_for_selector('a[title*="affichages"]', timeout=30000)
-            except Exception:
-                await page.screenshot(path="debug_timeout.png", full_page=True)
-                titles = await page.eval_on_selector_all('a[title]', 'els => els.map(e => e.title)')
-                print("All <a title> values on page:", titles)
-                print("Page HTML snippet:\n", (await page.content())[:3000])
-                raise
+async def scrape_page(matrix_page, worksheet, centris_values):
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(
+            headless=True,
+            args=["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"],
+        )
+        context = await browser.new_context(
+            user_agent=(
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/124.0.0.0 Safari/537.36"
+            ),
+            viewport={"width": 1280, "height": 800},
+        )
+        page = await context.new_page()
+        await page.goto(matrix_page, wait_until="networkidle", timeout=60000)
 
-            await page.click('a[title*="affichages"]')
+        await page.screenshot(path="debug_after_goto.png", full_page=True)
+        print("Page title after goto:", await page.title())
+        print("Page URL after goto:", page.url)
 
-            await page.wait_for_selector('a:has-text("Sommaire")', state='visible', timeout=7000)
-            async with page.expect_navigation(wait_until='load', timeout=15000):
-                await page.click('a:has-text("Sommaire")')
+        try:
+            await page.wait_for_selector('a[title*="affichages"]', timeout=30000)
+        except Exception:
+            await page.screenshot(path="debug_timeout.png", full_page=True)
+            titles = await page.eval_on_selector_all('a[title]', 'els => els.map(e => e.title)')
+            print("All <a title> values on page:", titles)
+            print("Page HTML snippet:\n", (await page.content())[:3000])
+            raise
 
-            new_rows_count = 0
+        await page.click('a[title*="affichages"]')
 
-            while True:
-                await page.wait_for_selector(':has-text("Revenu bruts potentiels")', timeout=10000)
+        await page.wait_for_selector('a:has-text("Sommaire")', state='visible', timeout=7000)
+        async with page.expect_navigation(wait_until='load', timeout=15000):
+            await page.click('a:has-text("Sommaire")')
 
-                address = await page.locator('span.d-mega').inner_text()
-                address = address.strip()
-                address += ", Montreal"
+        new_rows_count = 0
 
-                price = await page.locator('span.d-text.d-fontSize--larger').inner_text()
-                price = ''.join(filter(str.isdigit, price))
+        while True:
+            await page.wait_for_selector(':has-text("Revenu bruts potentiels")', timeout=10000)
 
-                small_font = await page.locator('span.d-subtextSoft.d-fontSize--smallest').all_text_contents()
-                nb_centris = small_font[0][13:21]
-                date_envoi = small_font[0][-10:]
+            address = await page.locator('span.d-mega').inner_text()
+            address = address.strip()
+            address += ", Montreal"
 
-                start = page.locator('xpath=//*[contains(normalize-space(.), "Revenu bruts potentiels")]').nth(14)
-                section_text = (await start.inner_text()).strip()
-                lines = [l.strip() for l in section_text.splitlines() if l.strip()]
-                lines = lines[2:]
+            price = await page.locator('span.d-text.d-fontSize--larger').inner_text()
+            price = ''.join(filter(str.isdigit, price))
 
-                new_row = get_data_dict(lines)
-                new_row["Address"] = address
-                new_row["Prix"] = price
-                new_row["No. Centris"] = nb_centris
-                new_row["Date d'envoi"] = date_envoi
-                new_row["Lien"] = "https://www.centris.ca/fr/propriete/" + str(nb_centris)
+            small_font = await page.locator('span.d-subtextSoft.d-fontSize--smallest').all_text_contents()
+            nb_centris = small_font[0][13:21]
+            date_envoi = small_font[0][-10:]
 
-                if int("".join(ch for ch in nb_centris if ch.isdigit())) in centris_values:
-                    print(nb_centris, "Already in DB")
-                    await page.click('a.glyphicon.glyphicon-chevron-right')
-                    print("About to break while loop")
-                    break
-                else:
-                    # Serialize Typologie dict to string for the sheet cell
-                    new_row["Typologie"] = json.dumps(new_row["Typologie"], ensure_ascii=False) if isinstance(new_row["Typologie"], dict) else new_row["Typologie"]
+            start = page.locator('xpath=//*[contains(normalize-space(.), "Revenu bruts potentiels")]').nth(14)
+            section_text = (await start.inner_text()).strip()
+            lines = [l.strip() for l in section_text.splitlines() if l.strip()]
+            lines = lines[2:]
 
-                    # Save this row immediately to Sheet4
-                    row_values = [
-                        new_row.get("Date d'envoi", ""),
-                        new_row.get("No. Centris", ""),
-                        new_row.get("Lien", ""),
-                        new_row.get("Address", ""),
-                        new_row.get("Prix", ""),
-                        new_row.get("TGA Demandé", ""),
-                        new_row.get("Rev résidentiel", ""),
-                        new_row.get("Rev commercial", ""),
-                        new_row.get("Rev parking", ""),
-                        new_row.get("Rev autres", ""),
-                        new_row.get("Taxes municipales", ""),
-                        new_row.get("Taxe scolaire", ""),
-                        new_row.get("Électricité", ""),
-                        new_row.get("Mazout", ""),
-                        new_row.get("Gaz", ""),
-                        new_row.get("Assurances", ""),
-                        new_row.get("Typologie", ""),
-                    ]
-                    worksheet.append_row(row_values, value_input_option="USER_ENTERED")
-                    new_rows_count += 1
+            new_row = get_data_dict(lines)
+            new_row["Address"] = address
+            new_row["Prix"] = price
+            new_row["No. Centris"] = nb_centris
+            new_row["Date d'envoi"] = date_envoi
+            new_row["Lien"] = "https://www.centris.ca/fr/propriete/" + str(nb_centris)
 
-                    centris_values.append(nb_centris)
-                    print(f"Saved to sheet ({new_rows_count} new so far):", nb_centris, address)
-                    await page.click('a.glyphicon.glyphicon-chevron-right')
-                    time.sleep(5)
+            if int("".join(ch for ch in nb_centris if ch.isdigit())) in centris_values:
+                print(nb_centris, "Already in DB")
+                await page.click('a.glyphicon.glyphicon-chevron-right')
+                print("About to break while loop")
+                break
+            else:
+                new_row["Typologie"] = json.dumps(new_row["Typologie"], ensure_ascii=False) if isinstance(new_row["Typologie"], dict) else new_row["Typologie"]
 
-            await browser.close()
-        print(f"Done. Total new rows saved to Sheet4: {new_rows_count}")
+                row_values = [
+                    new_row.get("Date d'envoi", ""),
+                    new_row.get("No. Centris", ""),
+                    new_row.get("Lien", ""),
+                    new_row.get("Address", ""),
+                    new_row.get("Prix", ""),
+                    new_row.get("TGA Demandé", ""),
+                    new_row.get("Rev résidentiel", ""),
+                    new_row.get("Rev commercial", ""),
+                    new_row.get("Rev parking", ""),
+                    new_row.get("Rev autres", ""),
+                    new_row.get("Taxes municipales", ""),
+                    new_row.get("Taxe scolaire", ""),
+                    new_row.get("Électricité", ""),
+                    new_row.get("Mazout", ""),
+                    new_row.get("Gaz", ""),
+                    new_row.get("Assurances", ""),
+                    new_row.get("Typologie", ""),
+                ]
+                worksheet.append_row(row_values, value_input_option="USER_ENTERED")
+                new_rows_count += 1
+
+                centris_values.append(nb_centris)
+                print(f"Saved to sheet ({new_rows_count} new so far):", nb_centris, address)
+                await page.click('a.glyphicon.glyphicon-chevron-right')
+                time.sleep(5)
+
+        await browser.close()
+    print(f"Done. Total new rows saved to Sheet4: {new_rows_count}")
 
 
 if __name__ == "__main__":
