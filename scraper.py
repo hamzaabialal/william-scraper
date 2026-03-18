@@ -11,6 +11,21 @@ from google.oauth2.service_account import Credentials
 from gspread_dataframe import get_as_dataframe
 
 
+async def get_number_of_listings(url: str) -> int:
+    """Return the number of listings from the given Centris Matrix URL."""
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True)
+        page = await browser.new_page()
+        await page.goto(url)
+        element = page.locator("ul.pager.mtx-pager").first
+        text = await element.inner_text()
+        first_10 = text[:10]
+        numbers_only = re.sub(r"\D", "", first_10)
+        number = int(numbers_only)
+        await browser.close()
+        return number
+
+
 # ─── Google Sheets auth ───────────────────────────────────────────────────────
 
 def get_worksheet():
@@ -136,6 +151,8 @@ async def main():
     for matrix_page in matrix_pages:
         print(f"\n--- Scraping: {matrix_page} ---")
         try:
+          number_of_listings = await get_number_of_listings(matrix_page)
+          print("number_of_listings:", number_of_listings)
           await scrape_page(matrix_page, worksheet, centris_values)
         except Exception as e:
           print(f"ERROR on {matrix_page}: {e} — skipping to next URL")
