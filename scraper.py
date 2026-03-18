@@ -8,18 +8,17 @@ import pandas as pd
 from playwright.async_api import async_playwright
 import gspread
 from google.oauth2.service_account import Credentials
+from gspread_dataframe import get_as_dataframe, set_with_dataframe
 
 
-# ─── Google Sheets helpers ────────────────────────────────────────────────────
+# ─── Google Sheets auth ───────────────────────────────────────────────────────
 
-def get_gsheet_client():
-    """Authenticate with Google Sheets using service account JSON from env var."""
+def get_worksheet():
     creds_json = os.environ.get("GOOGLE_CREDENTIALS_JSON", "")
     if not creds_json.strip():
         raise ValueError(
             "GOOGLE_CREDENTIALS_JSON secret is empty or not set. "
-            "Go to your GitHub repo → Settings → Secrets and variables → Actions "
-            "and add GOOGLE_CREDENTIALS_JSON with the full contents of your service account JSON key."
+            "Add it under GitHub repo → Settings → Secrets and variables → Actions."
         )
     creds_dict = json.loads(creds_json)
     scopes = [
@@ -27,64 +26,19 @@ def get_gsheet_client():
         "https://www.googleapis.com/auth/drive",
     ]
     creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
-    return gspread.authorize(creds)
+    gc = gspread.authorize(creds)
 
-
-COLUMNS = [
-    "Date d'envoi", "No. Centris", "Lien", "Address", "Prix",
-    "TGA Demandé", "Rev résidentiel", "Rev commercial", "Rev parking",
-    "Rev autres", "Taxes municipales", "Taxe scolaire", "Électricité",
-    "Mazout", "Gaz", "Assurances", "Typologie",
-]
-
-
-def ensure_header(worksheet):
-    """Write the header row if the sheet is empty or has no header yet."""
-    first_row = worksheet.row_values(1)
-    if first_row != COLUMNS:
-        if not first_row:
-            # Sheet is completely empty — insert header at row 1
-            worksheet.insert_row(COLUMNS, index=1)
-        else:
-            print("WARNING: Row 1 does not match expected headers. Headers found:", first_row)
-
-
-def load_existing_centris_ids(worksheet) -> set:
-    """Return the set of Centris IDs already in the sheet (column 'No. Centris')."""
-    all_values = worksheet.get_all_values()
-    if len(all_values) < 2:
-        return set()  # empty or only header
-    header = all_values[0]
-    try:
-        col_idx = header.index("No. Centris")
-    except ValueError:
-        print("WARNING: 'No. Centris' column not found in sheet header.")
-        return set()
-    existing = set()
-    for row in all_values[1:]:
-        if col_idx < len(row):
-            val = str(row[col_idx]).strip()
-            if val:
-                existing.add(val)
-    print(f"Existing Centris IDs in sheet: {existing}")
-    return existing
-
-
-def append_rows_to_sheet(worksheet, df: pd.DataFrame):
-    """Append new rows to the Google Sheet."""
-    if df.empty:
-        return
-    rows = df.values.tolist()
-    # Convert any non-string types to string to avoid gspread serialisation issues
-    cleaned = [[str(cell) if not isinstance(cell, (int, float)) else cell for cell in row] for row in rows]
-    worksheet.append_rows(cleaned, value_input_option="USER_ENTERED")
+    sheet_id = os.environ["GOOGLE_SHEET_ID"]
+    worksheet = gc.open_by_key(sheet_id).sheet1
+    return worksheet
 
 
 # ─── Scraper helpers ──────────────────────────────────────────────────────────
 
 def get_data_dict(lines):
-    # Revenue
     data_dict = {}
+
+    # Revenue
     data_dict["Rev résidentiel"] = ''.join(filter(str.isdigit, lines[0]))
 
     if "Commercial" in lines and "$" in lines[lines.index("Commercial") + 1]:
@@ -158,14 +112,25 @@ def get_data_dict(lines):
 
 # ─── Main scraper ─────────────────────────────────────────────────────────────
 
-async def scrape(matrix_pages: list[str], existing_ids: set) -> pd.DataFrame:
-    columns = [
-        "Date d'envoi", "No. Centris", "Lien", "Address", "Prix",
-        "TGA Demandé", "Rev résidentiel", "Rev commercial", "Rev parking",
-        "Rev autres", "Taxes municipales", "Taxe scolaire", "Électricité",
-        "Mazout", "Gaz", "Assurances", "Typologie",
+async def main():
+    matrix_pages = [
+        "https://matrix.centris.ca/Matrix/Public/Portal.aspx?L=2&k=7674282XFBM&p=AE-1549033-780#1",
     ]
-    all_rows = []
+
+    worksheet = get_worksheet()
+
+    # Load existing data from sheet — same as original Colab code
+    saved_data = get_as_dataframe(worksheet, evaluate_formulas=True)
+    saved_data = saved_data.dropna(how="all")  # drop fully empty rows gspread_dataframe adds
+    print(f"Rows already in sheet: {len(saved_data)}")
+
+    # Build centris_values list from sheet — same logic as original
+    if "No. Centris" in saved_data.columns and len(saved_data) > 0:
+        centris_values = [int(''.join(filter(str.isdigit, str(x)))) for x in saved_data["No. Centris"].values if str(x).strip() not in ("", "nan")]
+    else:
+        centris_values = []
+    print("Length of centris_values:", len(centris_values))
+    print(centris_values)
 
     for matrix_page in matrix_pages:
         async with async_playwright() as p:
@@ -184,17 +149,14 @@ async def scrape(matrix_pages: list[str], existing_ids: set) -> pd.DataFrame:
             page = await context.new_page()
             await page.goto(matrix_page, wait_until="networkidle", timeout=60000)
 
-            # Debug: screenshot so we can see what the page looks like in CI
             await page.screenshot(path="debug_after_goto.png", full_page=True)
             print("Page title after goto:", await page.title())
             print("Page URL after goto:", page.url)
 
-            # Use contains match to avoid apostrophe encoding issues (U+2019 vs U+0027)
             try:
                 await page.wait_for_selector('a[title*="affichages"]', timeout=30000)
             except Exception:
                 await page.screenshot(path="debug_timeout.png", full_page=True)
-                # Print all <a> title attributes to diagnose the exact text
                 titles = await page.eval_on_selector_all('a[title]', 'els => els.map(e => e.title)')
                 print("All <a title> values on page:", titles)
                 print("Page HTML snippet:\n", (await page.content())[:3000])
@@ -206,13 +168,20 @@ async def scrape(matrix_pages: list[str], existing_ids: set) -> pd.DataFrame:
             async with page.expect_navigation(wait_until='load', timeout=15000):
                 await page.click('a:has-text("Sommaire")')
 
-            centris_values = []
+            # New rows collected this run
+            df = pd.DataFrame(columns=[
+                "Date d'envoi", "No. Centris", "Lien", "Address", "Prix",
+                "TGA Demandé", "Rev résidentiel", "Rev commercial", "Rev parking",
+                "Rev autres", "Taxes municipales", "Taxe scolaire", "Électricité",
+                "Mazout", "Gaz", "Assurances", "Typologie",
+            ])
 
             while True:
                 await page.wait_for_selector(':has-text("Revenu bruts potentiels")', timeout=10000)
 
                 address = await page.locator('span.d-mega').inner_text()
                 address = address.strip()
+                address += ", Montreal"
 
                 price = await page.locator('span.d-text.d-fontSize--larger').inner_text()
                 price = ''.join(filter(str.isdigit, price))
@@ -233,17 +202,14 @@ async def scrape(matrix_pages: list[str], existing_ids: set) -> pd.DataFrame:
                 new_row["Date d'envoi"] = date_envoi
                 new_row["Lien"] = "https://www.centris.ca/fr/propriete/" + str(nb_centris)
 
-                centris_id_clean = int("".join(ch for ch in nb_centris if ch.isdigit()))
-
-                if nb_centris in existing_ids or centris_id_clean in centris_values:
+                if int("".join(ch for ch in nb_centris if ch.isdigit())) in centris_values:
                     print(nb_centris, "Already in DB")
                     await page.click('a.glyphicon.glyphicon-chevron-right')
                     print("About to break while loop")
                     break
                 else:
-                    all_rows.append(new_row)
-                    centris_values.append(centris_id_clean)
-                    existing_ids.add(nb_centris)
+                    df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
+                    centris_values.append(nb_centris)
                     print("Length of centris_values:", len(centris_values))
                     print(new_row)
                     await page.click('a.glyphicon.glyphicon-chevron-right')
@@ -251,43 +217,17 @@ async def scrape(matrix_pages: list[str], existing_ids: set) -> pd.DataFrame:
 
             await browser.close()
 
-    df = pd.DataFrame(all_rows, columns=columns)
-    # Serialize Typologie dict to string so it fits in a sheet cell
-    if "Typologie" in df.columns:
-        df["Typologie"] = df["Typologie"].apply(lambda x: json.dumps(x, ensure_ascii=False) if isinstance(x, dict) else x)
-    return df
+        # Find the first empty row — same as original Colab code
+        existing_values = worksheet.get_all_values()
+        start_row = len(existing_values) + 1
 
+        # Serialize Typologie dict to string so it fits in a sheet cell
+        df["Typologie"] = df["Typologie"].apply(
+            lambda x: json.dumps(x, ensure_ascii=False) if isinstance(x, dict) else x
+        )
 
-# ─── Entry point ─────────────────────────────────────────────────────────────
-
-async def main():
-    matrix_pages = [
-        "https://matrix.centris.ca/Matrix/Public/Portal.aspx?L=2&k=7674282XFBM&p=AE-1549033-780#1",
-    ]
-
-    spreadsheet_id = os.environ["GOOGLE_SHEET_ID"]
-    worksheet_name = os.environ.get("GOOGLE_SHEET_TAB", "Sheet1")
-
-    client = get_gsheet_client()
-    spreadsheet = client.open_by_key(spreadsheet_id)
-
-    try:
-        worksheet = spreadsheet.worksheet(worksheet_name)
-    except gspread.exceptions.WorksheetNotFound:
-        worksheet = spreadsheet.add_worksheet(title=worksheet_name, rows=1000, cols=20)
-
-    ensure_header(worksheet)
-    existing_ids = load_existing_centris_ids(worksheet)
-    print(f"Existing IDs in sheet: {len(existing_ids)}")
-
-    df = await scrape(matrix_pages, existing_ids)
-    print(f"New rows scraped: {len(df)}")
-
-    if not df.empty:
-        append_rows_to_sheet(worksheet, df)
-        print("Rows appended to Google Sheet.")
-    else:
-        print("No new rows to add.")
+        set_with_dataframe(worksheet, df, row=start_row, include_index=False, include_column_header=False)
+        print(f"Appended {len(df)} rows starting at row {start_row}.")
 
 
 if __name__ == "__main__":

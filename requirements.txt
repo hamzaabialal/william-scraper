@@ -2,3 +2,4 @@ playwright
 pandas
 gspread
 google-auth
+gspread-dataframe
