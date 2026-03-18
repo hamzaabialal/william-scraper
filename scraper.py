@@ -114,6 +114,7 @@ def get_data_dict(lines):
 
 async def main():
     matrix_pages = [
+        "https://matrix.centris.ca/Matrix/Public/Portal.aspx?ID=0-1679004740-00&eml=dy5ncmlnYXRAbGlmYS5jYQ==&L=2",
         "https://matrix.centris.ca/Matrix/Public/Portal.aspx?L=2&k=7674282XFBM&p=AE-1549033-780#1",
     ]
 
