@@ -30,14 +30,43 @@ def get_gsheet_client():
     return gspread.authorize(creds)
 
 
+COLUMNS = [
+    "Date d'envoi", "No. Centris", "Lien", "Address", "Prix",
+    "TGA Demandé", "Rev résidentiel", "Rev commercial", "Rev parking",
+    "Rev autres", "Taxes municipales", "Taxe scolaire", "Électricité",
+    "Mazout", "Gaz", "Assurances", "Typologie",
+]
+
+
+def ensure_header(worksheet):
+    """Write the header row if the sheet is empty or has no header yet."""
+    first_row = worksheet.row_values(1)
+    if first_row != COLUMNS:
+        if not first_row:
+            # Sheet is completely empty — insert header at row 1
+            worksheet.insert_row(COLUMNS, index=1)
+        else:
+            print("WARNING: Row 1 does not match expected headers. Headers found:", first_row)
+
+
 def load_existing_centris_ids(worksheet) -> set:
     """Return the set of Centris IDs already in the sheet (column 'No. Centris')."""
-    records = worksheet.get_all_records()
+    all_values = worksheet.get_all_values()
+    if len(all_values) < 2:
+        return set()  # empty or only header
+    header = all_values[0]
+    try:
+        col_idx = header.index("No. Centris")
+    except ValueError:
+        print("WARNING: 'No. Centris' column not found in sheet header.")
+        return set()
     existing = set()
-    for row in records:
-        val = str(row.get("No. Centris", "")).strip()
-        if val:
-            existing.add(val)
+    for row in all_values[1:]:
+        if col_idx < len(row):
+            val = str(row[col_idx]).strip()
+            if val:
+                existing.add(val)
+    print(f"Existing Centris IDs in sheet: {existing}")
     return existing
 
 
@@ -46,7 +75,9 @@ def append_rows_to_sheet(worksheet, df: pd.DataFrame):
     if df.empty:
         return
     rows = df.values.tolist()
-    worksheet.append_rows(rows, value_input_option="USER_ENTERED")
+    # Convert any non-string types to string to avoid gspread serialisation issues
+    cleaned = [[str(cell) if not isinstance(cell, (int, float)) else cell for cell in row] for row in rows]
+    worksheet.append_rows(cleaned, value_input_option="USER_ENTERED")
 
 
 # ─── Scraper helpers ──────────────────────────────────────────────────────────
@@ -244,15 +275,8 @@ async def main():
         worksheet = spreadsheet.worksheet(worksheet_name)
     except gspread.exceptions.WorksheetNotFound:
         worksheet = spreadsheet.add_worksheet(title=worksheet_name, rows=1000, cols=20)
-        # Write header row
-        columns = [
-            "Date d'envoi", "No. Centris", "Lien", "Address", "Prix",
-            "TGA Demandé", "Rev résidentiel", "Rev commercial", "Rev parking",
-            "Rev autres", "Taxes municipales", "Taxe scolaire", "Électricité",
-            "Mazout", "Gaz", "Assurances", "Typologie",
-        ]
-        worksheet.append_row(columns)
 
+    ensure_header(worksheet)
     existing_ids = load_existing_centris_ids(worksheet)
     print(f"Existing IDs in sheet: {len(existing_ids)}")
 
