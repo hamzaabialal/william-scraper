@@ -14,7 +14,13 @@ from google.oauth2.service_account import Credentials
 
 def get_gsheet_client():
     """Authenticate with Google Sheets using service account JSON from env var."""
-    creds_json = os.environ["GOOGLE_CREDENTIALS_JSON"]
+    creds_json = os.environ.get("GOOGLE_CREDENTIALS_JSON", "")
+    if not creds_json.strip():
+        raise ValueError(
+            "GOOGLE_CREDENTIALS_JSON secret is empty or not set. "
+            "Go to your GitHub repo → Settings → Secrets and variables → Actions "
+            "and add GOOGLE_CREDENTIALS_JSON with the full contents of your service account JSON key."
+        )
     creds_dict = json.loads(creds_json)
     scopes = [
         "https://www.googleapis.com/auth/spreadsheets",
@@ -132,11 +138,34 @@ async def scrape(matrix_pages: list[str], existing_ids: set) -> pd.DataFrame:
 
     for matrix_page in matrix_pages:
         async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=True)
-            context = await browser.new_context()
+            browser = await p.chromium.launch(
+                headless=True,
+                args=["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"],
+            )
+            context = await browser.new_context(
+                user_agent=(
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/124.0.0.0 Safari/537.36"
+                ),
+                viewport={"width": 1280, "height": 800},
+            )
             page = await context.new_page()
-            await page.goto(matrix_page)
-            await page.wait_for_selector('a[title="Plus d\'affichages"]')
+            await page.goto(matrix_page, wait_until="networkidle", timeout=60000)
+
+            # Debug: screenshot so we can see what the page looks like in CI
+            await page.screenshot(path="debug_after_goto.png", full_page=True)
+            print("Page title after goto:", await page.title())
+            print("Page URL after goto:", page.url)
+
+            try:
+                await page.wait_for_selector('a[title="Plus d\'affichages"]', timeout=30000)
+            except Exception:
+                await page.screenshot(path="debug_timeout.png", full_page=True)
+                print("ERROR: Could not find 'Plus d'affichages'. Saving screenshot as debug_timeout.png")
+                print("Page HTML snippet:\n", (await page.content())[:3000])
+                raise
+
             await page.click('a[title="Plus d\'affichages"]')
 
             await page.wait_for_selector('a:has-text("Sommaire")', state='visible', timeout=7000)
