@@ -8,7 +8,7 @@ import pandas as pd
 from playwright.async_api import async_playwright
 import gspread
 from google.oauth2.service_account import Credentials
-from gspread_dataframe import get_as_dataframe, set_with_dataframe
+from gspread_dataframe import get_as_dataframe
 
 
 # ─── Google Sheets auth ───────────────────────────────────────────────────────
@@ -29,7 +29,7 @@ def get_worksheet():
     gc = gspread.authorize(creds)
 
     sheet_id = os.environ["GOOGLE_SHEET_ID"]
-    worksheet = gc.open_by_key(sheet_id).sheet1
+    worksheet = gc.open_by_key(sheet_id).worksheet("Sheet4")
     return worksheet
 
 
@@ -168,13 +168,7 @@ async def main():
             async with page.expect_navigation(wait_until='load', timeout=15000):
                 await page.click('a:has-text("Sommaire")')
 
-            # New rows collected this run
-            df = pd.DataFrame(columns=[
-                "Date d'envoi", "No. Centris", "Lien", "Address", "Prix",
-                "TGA Demandé", "Rev résidentiel", "Rev commercial", "Rev parking",
-                "Rev autres", "Taxes municipales", "Taxe scolaire", "Électricité",
-                "Mazout", "Gaz", "Assurances", "Typologie",
-            ])
+            new_rows_count = 0
 
             while True:
                 await page.wait_for_selector(':has-text("Revenu bruts potentiels")', timeout=10000)
@@ -208,26 +202,39 @@ async def main():
                     print("About to break while loop")
                     break
                 else:
-                    df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
+                    # Serialize Typologie dict to string for the sheet cell
+                    new_row["Typologie"] = json.dumps(new_row["Typologie"], ensure_ascii=False) if isinstance(new_row["Typologie"], dict) else new_row["Typologie"]
+
+                    # Save this row immediately to Sheet4
+                    row_values = [
+                        new_row.get("Date d'envoi", ""),
+                        new_row.get("No. Centris", ""),
+                        new_row.get("Lien", ""),
+                        new_row.get("Address", ""),
+                        new_row.get("Prix", ""),
+                        new_row.get("TGA Demandé", ""),
+                        new_row.get("Rev résidentiel", ""),
+                        new_row.get("Rev commercial", ""),
+                        new_row.get("Rev parking", ""),
+                        new_row.get("Rev autres", ""),
+                        new_row.get("Taxes municipales", ""),
+                        new_row.get("Taxe scolaire", ""),
+                        new_row.get("Électricité", ""),
+                        new_row.get("Mazout", ""),
+                        new_row.get("Gaz", ""),
+                        new_row.get("Assurances", ""),
+                        new_row.get("Typologie", ""),
+                    ]
+                    worksheet.append_row(row_values, value_input_option="USER_ENTERED")
+                    new_rows_count += 1
+
                     centris_values.append(nb_centris)
-                    print("Length of centris_values:", len(centris_values))
-                    print(new_row)
+                    print(f"Saved to sheet ({new_rows_count} new so far):", nb_centris, address)
                     await page.click('a.glyphicon.glyphicon-chevron-right')
                     time.sleep(5)
 
             await browser.close()
-
-        # Find the first empty row — same as original Colab code
-        existing_values = worksheet.get_all_values()
-        start_row = len(existing_values) + 1
-
-        # Serialize Typologie dict to string so it fits in a sheet cell
-        df["Typologie"] = df["Typologie"].apply(
-            lambda x: json.dumps(x, ensure_ascii=False) if isinstance(x, dict) else x
-        )
-
-        set_with_dataframe(worksheet, df, row=start_row, include_index=False, include_column_header=False)
-        print(f"Appended {len(df)} rows starting at row {start_row}.")
+        print(f"Done. Total new rows saved to Sheet4: {new_rows_count}")
 
 
 if __name__ == "__main__":
